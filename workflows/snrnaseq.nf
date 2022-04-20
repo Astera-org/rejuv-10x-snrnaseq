@@ -9,13 +9,25 @@ def summary_params = NfcoreSchema.paramsSummaryMap(workflow, params)
 // Validate input parameters
 WorkflowSnrnaseq.initialise(params, log)
 
-// TODO nf-core: Add all file path parameters for the pipeline to the list below
 // Check input path parameters to see if they exist
-def checkPathParamList = [ params.input, params.multiqc_config, params.fasta ]
+def checkPathParamList = [
+    params.input, params.multiqc_config,
+    params.cellranger_reference
+]
 for (param in checkPathParamList) { if (param) { file(param, checkIfExists: true) } }
 
 // Check mandatory parameters
-if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input samplesheet not specified!' }
+if (params.input) {
+    ch_input = file(params.input)
+} else {
+    exit 1, 'Input samplesheet not specified!'
+}
+
+if (params.cellranger_reference){
+    ch_cellranger_reference = file(params.cellranger_reference)
+} else {
+    exit 1, 'Reference genome and annotation for cellranger not specified!'
+}
 
 /*
 ========================================================================================
@@ -35,7 +47,8 @@ ch_multiqc_custom_config = params.multiqc_config ? Channel.fromPath(params.multi
 //
 // SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
 //
-include { INPUT_CHECK } from '../subworkflows/local/input_check'
+include { INPUT_CHECK      } from '../subworkflows/local/input_check'
+include { CELLRANGER_PIPELINE } from '../subworkflows/local/cellranger_pipeline'
 
 /*
 ========================================================================================
@@ -48,6 +61,7 @@ include { INPUT_CHECK } from '../subworkflows/local/input_check'
 //
 include { FASTQC                      } from '../modules/nf-core/modules/fastqc/main'
 include { MULTIQC                     } from '../modules/nf-core/modules/multiqc/main'
+include { UNTAR                       } from '../modules/nf-core/modules/untar/main'
 include { CUSTOM_DUMPSOFTWAREVERSIONS } from '../modules/nf-core/modules/custom/dumpsoftwareversions/main'
 
 /*
@@ -69,15 +83,44 @@ workflow SNRNASEQ {
     INPUT_CHECK (
         ch_input
     )
+    .reads
+    .map {
+        meta, fastq ->
+            meta.id = meta.id.split('_')[0..-2].join('_')
+            [ meta, fastq ] }
+    .groupTuple(by: [0])
+    .map {
+        meta, fastq -> [ meta, fastq.flatten() ]
+    }
+    .set { ch_fastq }
     ch_versions = ch_versions.mix(INPUT_CHECK.out.versions)
 
     //
     // MODULE: Run FastQC
     //
     FASTQC (
-        INPUT_CHECK.out.reads
+        ch_fastq
     )
     ch_versions = ch_versions.mix(FASTQC.out.versions.first())
+
+    //
+    // Unpack cellranger reference if provided as tar(gz)
+    //
+    if(ch_cellranger_reference.isFile()){
+        ch_cellranger_reference_folder = UNTAR(
+            [ [:], ch_cellranger_reference ]
+        )
+        .untar.map { it[1] }
+        ch_versions = ch_versions.mix(UNTAR.out.versions)
+    } else {
+        ch_cellranger_reference.set { ch_cellranger_reference_folder }
+    }
+
+    CELLRANGER_PIPELINE(
+        ch_cellranger_reference_folder,
+        ch_fastq
+    )
+    ch_versions = ch_versions.mix(CELLRANGER_PIPELINE.out.ch_versions)
 
     CUSTOM_DUMPSOFTWAREVERSIONS (
         ch_versions.unique().collectFile(name: 'collated_versions.yml')
@@ -116,8 +159,3 @@ workflow.onComplete {
     NfcoreTemplate.summary(workflow, params, log)
 }
 
-/*
-========================================================================================
-    THE END
-========================================================================================
-*/
