@@ -1,4 +1,10 @@
 process CELLRANGER_AGGREGATE_REPORTS {
+    label 'process_low'
+
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+            'https://containers.biocontainers.pro/s3/SingImgsRepo/biocontainers/v1.2.0_cv2/biocontainers_v1.2.0_cv2.img' :
+            'biocontainers/biocontainers:v1.2.0_cv2' }"
+
     input:
     path(metric_reports), stageAs: 'metrics_summary??.csv'
     val(meta)
